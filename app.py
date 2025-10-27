@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 import plotly.express as px
 
 
@@ -198,8 +199,36 @@ def load_legacy_expenses(df_raw: pd.DataFrame) -> pd.DataFrame:
     return long_df
 
 
+def _read_csv_robust(uploaded_file) -> pd.DataFrame:
+    """Read CSVs from various OS/Excel exports robustly.
+    - Detect BOM for UTF-16/UTF-8-SIG
+    - Try common encodings if needed
+    - Auto-detect separator
+    """
+    data = uploaded_file.read()
+    # Heuristic encoding detection via BOM
+    enc_guess = None
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        enc_guess = "utf-16"
+    elif data.startswith(b"\xef\xbb\xbf"):
+        enc_guess = "utf-8-sig"
+    tried = []
+    for enc in [enc_guess, "utf-8", "utf-8-sig", "utf-16", "utf-16le", "utf-16be", "latin-1"]:
+        if not enc:
+            continue
+        try:
+            df = pd.read_csv(io.BytesIO(data), encoding=enc, sep=None, engine="python")
+            return df
+        except Exception as e:
+            tried.append((enc, str(e)))
+            continue
+    # Last resort: try default without encoding
+    df = pd.read_csv(io.BytesIO(data), sep=None, engine="python")
+    return df
+
+
 def load_uploaded_csv(uploaded_file) -> pd.DataFrame:
-    df_raw = pd.read_csv(uploaded_file)
+    df_raw = _read_csv_robust(uploaded_file)
     # Try new schema first
     try:
         return load_new_budget_export(df_raw)
