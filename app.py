@@ -3,6 +3,9 @@ import pandas as pd
 import io
 import plotly.express as px
 
+# Use wide page layout by default
+st.set_page_config(layout="wide")
+
 
 def _titlecase_person(name: str) -> str:
     if not isinstance(name, str):
