@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
+import plotly.graph_objects as go
 
 # Use wide page layout by default
 st.set_page_config(layout="wide")
@@ -372,6 +373,46 @@ if uploaded_file is not None:
         )
         fig.update_xaxes(range=[date_start, date_end])
         st.plotly_chart(fig, use_container_width=True)
+
+        # Monthly stacked bars per person (one chart per person)
+        st.subheader("Monthly Stacked Totals by Category (Per Person)")
+        bar_src = lf[lf["category"].isin(selected)].copy()
+        if not bar_src.empty:
+            bar_src["Month"] = pd.to_datetime(bar_src["date"]).dt.to_period("M").astype(str)
+            monthly = (
+                bar_src.groupby(["Month", "person", "category"], as_index=False)["amount"].sum()
+                .rename(columns={"person": "Person", "category": "Category", "amount": "Amount"})
+            )
+
+            # Consistent category colors across charts
+            all_cats = sorted(monthly["Category"].dropna().astype(str).unique().tolist())
+            palette = (
+                px.colors.qualitative.Set3
+                + px.colors.qualitative.Pastel
+                + px.colors.qualitative.Safe
+                + px.colors.qualitative.Vivid
+            )
+            color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
+
+            # Month categorical order across the selected window
+            months_window = pd.period_range(start=date_start, end=date_end, freq="M")
+            month_order = [str(m) for m in months_window]
+
+            persons_for_bar = person_order if person_order else sorted(monthly["Person"].unique().tolist())
+            for idx, person in enumerate(persons_for_bar):
+                df_p = monthly[monthly["Person"] == person]
+                fig_p = px.bar(
+                    df_p,
+                    x="Month",
+                    y="Amount",
+                    color="Category",
+                    barmode="stack",
+                    color_discrete_map=color_map,
+                    category_orders={"Month": month_order},
+                    title=f"{person}",
+                )
+                fig_p.update_layout(legend_title_text="Category")
+                st.plotly_chart(fig_p, use_container_width=True)
 
         # Separate charts per category with consistent window
         st.subheader("Per-Category Timelines")
