@@ -620,7 +620,29 @@ else:
         st.plotly_chart(apply_plot_style(stacked, max(430, 260 * max(1, len(person_order)))), use_container_width=True)
 
     with yearly_tab:
-        annual_source = long_df[long_df["category"].isin(selected_categories)].copy()
+        if "yearly_people_filter" in st.session_state:
+            valid_people = [person for person in st.session_state["yearly_people_filter"] if person in person_order]
+            st.session_state["yearly_people_filter"] = valid_people if valid_people else person_order
+            yearly_people = st.multiselect(
+                "People",
+                person_order,
+                key="yearly_people_filter",
+                help="Defaults to the household total. Select one person to analyze their own monthly average spending.",
+            )
+        else:
+            yearly_people = st.multiselect(
+                "People",
+                person_order,
+                default=person_order,
+                key="yearly_people_filter",
+                help="Defaults to the household total. Select one person to analyze their own monthly average spending.",
+            )
+        budget_subject = yearly_people[0] if len(yearly_people) == 1 else "Household"
+
+        annual_source = long_df[
+            long_df["category"].isin(selected_categories)
+            & long_df["person"].isin(yearly_people)
+        ].copy()
         if annual_source.empty:
             st.info("No yearly data is available for the selected categories.")
         else:
@@ -734,7 +756,7 @@ else:
 
             left, right = st.columns([1, 1.35])
             with left:
-                st.markdown("#### Household Budget by Year")
+                st.markdown(f"#### {budget_subject} Budget by Year")
                 annual_fig = px.bar(
                     annual_total,
                     x="Year",
@@ -752,7 +774,7 @@ else:
                 st.plotly_chart(apply_plot_style(annual_fig, 450), use_container_width=True)
 
             with right:
-                st.markdown("#### Main Annual Budget Drivers")
+                st.markdown(f"#### {budget_subject} Annual Budget Drivers")
                 annual_stack = px.bar(
                     annual_cat_plot,
                     x="Year",
@@ -809,7 +831,7 @@ else:
                         "Change": current_amount - prior_amount,
                     })
 
-                st.subheader(f"{anchor_year} vs {prior_year} Category Drivers")
+                st.subheader(f"{budget_subject}: {anchor_year} vs {prior_year} Category Drivers")
                 if compare_rows:
                     comparison = pd.DataFrame(compare_rows)
                     comparison["Abs change"] = comparison["Change"].abs()
