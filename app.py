@@ -377,6 +377,56 @@ def category_difference_table(lf: pd.DataFrame, person_order: list[str]) -> pd.D
     return pivot.sort_values("Abs Difference", ascending=False)
 
 
+def year_month_range(months: list[pd.Period], year: int):
+    year_months = [month for month in months if month.year == year]
+    if not year_months:
+        return None
+    return str(year_months[0]), str(year_months[-1])
+
+
+def trailing_month_range(months: list[pd.Period], count: int):
+    if not months:
+        return None
+    selected = months[-count:]
+    return str(selected[0]), str(selected[-1])
+
+
+def default_selected_categories(categories: list[str]) -> list[str]:
+    selected = [category for category in categories if category.strip().lower() != "money transfer"]
+    return selected if selected else categories
+
+
+def month_name(month: int) -> str:
+    return pd.Timestamp(year=2000, month=int(month), day=1).strftime("%b")
+
+
+def month_count(month_range: tuple[int, int]) -> int:
+    return max(1, int(month_range[1]) - int(month_range[0]) + 1)
+
+
+def in_month_range(df: pd.DataFrame, month_range: tuple[int, int]) -> pd.Series:
+    months = df["date"].dt.month
+    return (months >= int(month_range[0])) & (months <= int(month_range[1]))
+
+
+def reset_invalid_month_range(key: str, default_value: tuple[int, int]):
+    value = st.session_state.get(key)
+    try:
+        start_month, end_month = int(value[0]), int(value[1])
+        is_valid = 1 <= start_month <= end_month <= 12
+    except (TypeError, ValueError, IndexError):
+        is_valid = False
+    if is_valid:
+        st.session_state[key] = (start_month, end_month)
+    else:
+        st.session_state[key] = default_value
+
+
+def render_range_button(label: str, target_range, key: str):
+    if st.button(label, key=key, disabled=target_range is None, use_container_width=True):
+        st.session_state["month_range"] = target_range
+
+
 def render_empty_state():
     st.info("Upload a budget CSV from the sidebar to build the dashboard.")
 
@@ -416,6 +466,18 @@ else:
         if "month_range" not in st.session_state or any(m not in month_labels for m in st.session_state["month_range"]):
             st.session_state["month_range"] = default_range
 
+        current_year = pd.Timestamp.today().year
+        st.caption("Quick ranges")
+        quick_left, quick_right = st.columns(2)
+        with quick_left:
+            render_range_button("All", default_range, "range_all")
+            render_range_button(f"Current year ({current_year})", year_month_range(months_all, current_year), "range_current_year")
+            render_range_button("Year 2024", year_month_range(months_all, 2024), "range_2024")
+        with quick_right:
+            render_range_button("Last 3 months", trailing_month_range(months_all, 3), "range_last_3")
+            render_range_button("Last 6 months", trailing_month_range(months_all, 6), "range_last_6")
+            render_range_button(f"Last year ({current_year - 1})", year_month_range(months_all, current_year - 1), "range_last_year")
+
         start_label, end_label = st.select_slider(
             "Month range",
             options=month_labels,
@@ -425,7 +487,7 @@ else:
         selected_categories = st.multiselect(
             "Categories",
             categories,
-            default=categories,
+            default=default_selected_categories(categories),
         )
         show_cumulative = st.toggle("Cumulative race", value=True)
         max_top = min(15, len(categories))
@@ -477,8 +539,8 @@ else:
     else:
         k4.metric("Biggest category gap", "N/A")
 
-    overview_tab, categories_tab, trends_tab, transactions_tab = st.tabs(
-        ["Overview", "Category Battle", "Trends", "Transactions"]
+    overview_tab, yearly_tab, categories_tab, trends_tab, transactions_tab = st.tabs(
+        ["Overview", "Yearly Budget", "Category Battle", "Trends", "Transactions"]
     )
 
     monthly_person = (
@@ -556,6 +618,240 @@ else:
         stacked.update_yaxes(tickprefix="$", matches=None)
         stacked.update_layout(legend_title_text="Category")
         st.plotly_chart(apply_plot_style(stacked, max(430, 260 * max(1, len(person_order)))), use_container_width=True)
+
+    with yearly_tab:
+        annual_source = long_df[long_df["category"].isin(selected_categories)].copy()
+        if annual_source.empty:
+            st.info("No yearly data is available for the selected categories.")
+        else:
+            annual_source["Year"] = annual_source["date"].dt.year
+            annual_source["Month"] = annual_source["date"].dt.month
+            available_years = sorted(annual_source["Year"].unique().tolist())
+            calendar_today = pd.Timestamp.today()
+            anchor_year = calendar_today.year if calendar_today.year in available_years else available_years[-1]
+            prior_year_options = [year for year in available_years if year < anchor_year]
+            prior_year = anchor_year - 1 if anchor_year - 1 in available_years else (prior_year_options[-1] if prior_year_options else None)
+
+            latest_anchor_month = int(annual_source.loc[annual_source["Year"] == anchor_year, "Month"].max())
+            default_current_end = min(
+                latest_anchor_month,
+                calendar_today.month if anchor_year == calendar_today.year else latest_anchor_month,
+            )
+            default_current_period = (1, max(1, default_current_end))
+            default_prior_period = default_current_period
+            reset_invalid_month_range("yearly_current_period", default_current_period)
+            reset_invalid_month_range("yearly_prior_period", default_prior_period)
+
+            control_left, control_right, control_mode = st.columns([1, 1, 0.9])
+            with control_left:
+                current_period = st.select_slider(
+                    f"{anchor_year} period",
+                    options=list(range(1, 13)),
+                    value=st.session_state["yearly_current_period"],
+                    key="yearly_current_period",
+                    format_func=month_name,
+                )
+            with control_right:
+                if prior_year is not None:
+                    prior_period = st.select_slider(
+                        f"{prior_year} period",
+                        options=list(range(1, 13)),
+                        value=st.session_state["yearly_prior_period"],
+                        key="yearly_prior_period",
+                        format_func=month_name,
+                    )
+                else:
+                    prior_period = default_prior_period
+                    st.info("No prior year is available for comparison.")
+            with control_mode:
+                use_absolute_yearly = st.toggle(
+                    "Absolute totals",
+                    value=False,
+                    help=(
+                        "Off: compare years using average monthly spend. "
+                        "On: compare period totals using the selected month windows."
+                    ),
+                )
+
+            if use_absolute_yearly:
+                annual_basis = annual_source[in_month_range(annual_source, current_period)].copy()
+                annual_total = (
+                    annual_basis.groupby("Year", as_index=False)["amount"].sum()
+                    .rename(columns={"amount": "Amount"})
+                    .sort_values("Year")
+                )
+                annual_cat = (
+                    annual_basis.groupby(["Year", "category"], as_index=False)["amount"].sum()
+                    .rename(columns={"category": "Category", "amount": "Amount"})
+                )
+                amount_label = f"Period total ({month_name(current_period[0])}-{month_name(current_period[1])})"
+                hover_label = "Period total"
+            else:
+                active_months = annual_source.groupby("Year")["Month"].nunique().rename("Month count")
+                annual_total = (
+                    annual_source.groupby("Year", as_index=False)["amount"].sum()
+                    .rename(columns={"amount": "Raw total"})
+                    .sort_values("Year")
+                    .merge(active_months, on="Year", how="left")
+                )
+                annual_total["Amount"] = annual_total["Raw total"] / annual_total["Month count"].clip(lower=1)
+                annual_cat = (
+                    annual_source.groupby(["Year", "category"], as_index=False)["amount"].sum()
+                    .rename(columns={"category": "Category", "amount": "Raw amount"})
+                    .merge(active_months, on="Year", how="left")
+                )
+                annual_cat["Amount"] = annual_cat["Raw amount"] / annual_cat["Month count"].clip(lower=1)
+                amount_label = "Avg monthly spend"
+                hover_label = "Monthly average"
+
+            annual_total["Year"] = annual_total["Year"].astype(str)
+            annual_cat["Year"] = annual_cat["Year"].astype(str)
+            annual_total["YoY change"] = annual_total["Amount"].diff()
+            annual_total["YoY %"] = annual_total["Amount"].pct_change()
+
+            top_annual_categories = (
+                annual_cat.groupby("Category", as_index=False)["Amount"].sum()
+                .sort_values("Amount", ascending=False)
+                .head(top_n)["Category"]
+                .tolist()
+            )
+            annual_cat_plot = annual_cat.copy()
+            annual_cat_plot["Category"] = annual_cat_plot["Category"].where(
+                annual_cat_plot["Category"].isin(top_annual_categories),
+                "Other",
+            )
+            annual_cat_plot = annual_cat_plot.groupby(["Year", "Category"], as_index=False)["Amount"].sum()
+            yearly_color_map = {**category_color_map, "Other": "#9aa4b2"}
+
+            top_driver = (
+                annual_cat.sort_values(["Year", "Amount"], ascending=[True, False])
+                .groupby("Year", as_index=False)
+                .head(1)
+                .rename(columns={"Category": "Top driver", "Amount": "Driver spend"})
+            )
+            annual_summary = annual_total.merge(top_driver, on="Year", how="left")
+            annual_summary["Top driver share"] = annual_summary["Driver spend"] / annual_summary["Amount"].replace(0, pd.NA)
+
+            left, right = st.columns([1, 1.35])
+            with left:
+                st.markdown("#### Household Budget by Year")
+                annual_fig = px.bar(
+                    annual_total,
+                    x="Year",
+                    y="Amount",
+                    text="Amount",
+                    labels={"Amount": amount_label},
+                )
+                annual_fig.update_traces(
+                    marker_color="#4e79a7",
+                    texttemplate="$%{text:,.0f}",
+                    textposition="outside",
+                    hovertemplate=f"<b>%{{x}}</b><br>{hover_label}: $%{{y:,.2f}}<extra></extra>",
+                )
+                annual_fig.update_yaxes(tickprefix="$")
+                st.plotly_chart(apply_plot_style(annual_fig, 450), use_container_width=True)
+
+            with right:
+                st.markdown("#### Main Annual Budget Drivers")
+                annual_stack = px.bar(
+                    annual_cat_plot,
+                    x="Year",
+                    y="Amount",
+                    color="Category",
+                    color_discrete_map=yearly_color_map,
+                    labels={"Amount": amount_label},
+                )
+                annual_stack.update_yaxes(tickprefix="$")
+                annual_stack = apply_plot_style(annual_stack, 500)
+                annual_stack.update_layout(
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.18,
+                        xanchor="left",
+                        x=0,
+                    ),
+                    legend_title_text="Category",
+                    margin=dict(l=20, r=20, t=22, b=110),
+                )
+                st.plotly_chart(annual_stack, use_container_width=True)
+
+            display_summary = annual_summary[
+                ["Year", "Amount", "YoY change", "YoY %", "Top driver", "Driver spend", "Top driver share"]
+            ].copy()
+            display_summary = display_summary.rename(columns={"Amount": amount_label})
+            st.dataframe(
+                style_currency(display_summary.style, [amount_label, "YoY change", "Driver spend"]).format(
+                    {"YoY %": "{:.1%}", "Top driver share": "{:.1%}"}
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            if prior_year is not None:
+                current_period_df = annual_source[
+                    (annual_source["Year"] == anchor_year) & in_month_range(annual_source, current_period)
+                ]
+                prior_period_df = annual_source[
+                    (annual_source["Year"] == prior_year) & in_month_range(annual_source, prior_period)
+                ]
+                compare_rows = []
+                for category in sorted(set(current_period_df["category"]).union(set(prior_period_df["category"]))):
+                    current_amount = current_period_df.loc[current_period_df["category"] == category, "amount"].sum()
+                    prior_amount = prior_period_df.loc[prior_period_df["category"] == category, "amount"].sum()
+                    if not use_absolute_yearly:
+                        current_amount = current_amount / month_count(current_period)
+                        prior_amount = prior_amount / month_count(prior_period)
+                    compare_rows.append({
+                        "Category": category,
+                        f"{prior_year}": prior_amount,
+                        f"{anchor_year}": current_amount,
+                        "Change": current_amount - prior_amount,
+                    })
+
+                st.subheader(f"{anchor_year} vs {prior_year} Category Drivers")
+                if compare_rows:
+                    comparison = pd.DataFrame(compare_rows)
+                    comparison["Abs change"] = comparison["Change"].abs()
+                    comparison = comparison.sort_values("Abs change", ascending=False)
+                    comparison_top = comparison.head(top_n).sort_values("Change")
+                    compare_metric = "period totals" if use_absolute_yearly else "monthly averages"
+
+                    compare_fig = go.Figure(
+                        go.Bar(
+                            x=comparison_top["Change"],
+                            y=comparison_top["Category"],
+                            orientation="h",
+                            marker_color=[
+                                "#4e79a7" if value >= 0 else "#e15759"
+                                for value in comparison_top["Change"]
+                            ],
+                            customdata=comparison_top[[f"{prior_year}", f"{anchor_year}"]].to_numpy(),
+                            hovertemplate=(
+                                "<b>%{y}</b><br>"
+                                f"{prior_year}: $%{{customdata[0]:,.2f}}<br>"
+                                f"{anchor_year}: $%{{customdata[1]:,.2f}}<br>"
+                                "Change: $%{x:,.2f}<extra></extra>"
+                            ),
+                        ),
+                    )
+                    compare_fig.add_vline(x=0, line_color="#8290a3", line_width=1)
+                    compare_fig.update_layout(
+                        title=f"Largest changes by category ({compare_metric})",
+                        xaxis_title=f"Positive = {anchor_year} higher",
+                        yaxis_title=None,
+                    )
+                    compare_fig.update_xaxes(tickprefix="$")
+                    st.plotly_chart(apply_plot_style(compare_fig, 460), use_container_width=True)
+
+                    comparison_table = comparison.drop(columns=["Abs change"])
+                    st.dataframe(
+                        style_currency(comparison_table.style, [f"{prior_year}", f"{anchor_year}", "Change"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("No spending exists in the selected comparison periods.")
 
     with categories_tab:
         if len(person_order) >= 2:
